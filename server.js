@@ -144,20 +144,28 @@ app.post('/api/chat', async (req, res) => {
                 );
             }
 
-            const [existingMetric] = await db.query('SELECT id FROM daily_metrics WHERE user_id = ? AND date = ?', [userId, today]);
-            
-            if (existingMetric.length > 0) {
-                await db.query('UPDATE daily_metrics SET daily_sentiment_score = ? WHERE id = ?', [finalSentimentScore, existingMetric[0].id]);
-            } else {
-                // AMBIL SKOR GLOBAL KEMARIN (Agar nilainya tidak 0 dan tidak merusak triase dokter)
-                const [lastMetric] = await db.query('SELECT global_7day_score FROM daily_metrics WHERE user_id = ? AND date != ? ORDER BY date DESC LIMIT 1', [userId, today]);
-                const tempGlobalScore = lastMetric.length > 0 ? lastMetric[0].global_7day_score : 500; // Default 500 jika user baru
+            // Ambil global kemarin sebagai basis EMA
+            const [lastMetric] = await db.query(
+                'SELECT global_7day_score FROM daily_metrics WHERE user_id = ? AND date < ? ORDER BY date DESC LIMIT 1',
+                [userId, today]
+            );
+            const yesterdayGlobal = lastMetric.length > 0 ? lastMetric[0].global_7day_score : 500;
 
-                await db.query(
-                    'INSERT INTO daily_metrics (user_id, date, daily_sentiment_score, final_daily_score, global_7day_score) VALUES (?, ?, ?, 0, ?)', 
-                    [userId, today, finalSentimentScore, tempGlobalScore] // Pakai tempGlobalScore di sini
-                );
-            }
+            // EMA: 30% hari ini + 70% kemarin
+            const newGlobal = Math.round((0.3 * finalSentimentScore) + (0.7 * yesterdayGlobal));
+            const isHotline = newGlobal < 350 ? 1 : 0;
+
+            // ON DUPLICATE KEY UPDATE: aman dari race condition & tidak bikin baris ganda
+            await db.query(
+                `INSERT INTO daily_metrics (user_id, date, daily_sentiment_score, final_daily_score, global_7day_score, is_hotline_triggered)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                   daily_sentiment_score = VALUES(daily_sentiment_score),
+                   final_daily_score = VALUES(final_daily_score),
+                   global_7day_score = VALUES(global_7day_score),
+                   is_hotline_triggered = VALUES(is_hotline_triggered)`,
+                [userId, today, finalSentimentScore, finalSentimentScore, newGlobal, isHotline]
+            );
         }
 
         // 5. Simpan history obrolan ke tabel chats
@@ -283,18 +291,17 @@ app.get('/api/counselor/alerts', async (req, res) => {
             AND m.daily_sentiment_score < 400 AND m.global_7day_score >= 400
         `);
 
-        // 3. QUERY REQUEST SOS MANUAL
+        // 3. QUERY REQUEST SOS MANUAL 
         const [studentRequests] = await db.query(`
-            SELECT p.id as intervention_id, u.username, u.fakultas, p.created_at, p.message,
-                   p.psikiater_id,
-                   u2.username as ditangani_oleh
+            SELECT p.id as intervention_id, p.mahasiswa_id, u.username, u.fakultas, p.created_at, p.message,
+                p.psikiater_id,
+                u2.username as ditangani_oleh
             FROM psychiatrist_interventions p
             JOIN users u ON p.mahasiswa_id = u.id
             LEFT JOIN users u2 ON p.psikiater_id = u2.id
             WHERE p.status = 'pending' AND p.message LIKE '%bantuan%'
             ORDER BY p.created_at DESC
         `);
-
         res.json({
             success: true,
             chronic: chronicAlerts,
@@ -306,8 +313,42 @@ app.get('/api/counselor/alerts', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
-// Di dalam endpoint app.post('/api/counselor/resolve-alert', ...)
-// Ganti bagian resolve-alert di server.js
+
+// =======================================================================
+// 7 hari
+// =======================================================================
+app.get('/api/counselor/student-journals/:studentId/:psikiaterId', async (req, res) => {
+    try {
+        const { studentId, psikiaterId } = req.params;
+
+        // CEK OTORISASI: Disamakan menggunakan status 'pending' sesuai data klaim/advice di database
+        const [checkAuth] = await db.query(
+            `SELECT id FROM psychiatrist_interventions 
+            WHERE mahasiswa_id = ? AND psikiater_id = ? AND status = 'pending'`,
+            [studentId, psikiaterId]
+        );
+
+        if (checkAuth.length === 0) {
+            return res.json({ success: false, message: 'Akses Ditolak: Anda belum mengklaim kasus ini atau status tidak valid.' });
+        }
+
+        // Ambil 7 jurnal terakhir mahasiswa tersebut
+        const [journals] = await db.query(
+            `SELECT DATE_FORMAT(date, '%d %b %Y') as nice_date, q1_feeling, q2_thought, q3_supporting, q4_contradicting, q5_gratitude, ai_feedback 
+             FROM journals 
+             WHERE user_id = ? 
+             ORDER BY date DESC LIMIT 7`,
+            [studentId]
+        );
+
+        res.json({ success: true, journals });
+    } catch (error) {
+        console.error("Error Fetch Journals:", error);
+        res.status(500).json({ success: false, message: "Server Error" });
+    }
+});
+
+
 app.post('/api/counselor/resolve-alert', async (req, res) => {
     const { username, psikiaterId } = req.body;
 
@@ -545,7 +586,37 @@ app.get('/api/chat/history/:userId', async (req, res) => {
         res.status(500).json({ success: false });
     }
 });
+// ENDPOINT: Konselor melihat jurnal 7 hari terakhir (Hanya jika sudah diklaim)
+app.get('/api/counselor/student-journals/:studentId/:psikiaterId', async (req, res) => {
+    try {
+        const { studentId, psikiaterId } = req.params;
 
+        // 1. CEK OTORISASI: Pastikan konselor ini benar-benar sedang menangani mahasiswa tersebut
+        const [checkAuth] = await db.query(
+            `SELECT id FROM psychiatrist_interventions 
+             WHERE mahasiswa_id = ? AND psikiater_id = ? AND status = 'active'`,
+            [studentId, psikiaterId]
+        );
+
+        if (checkAuth.length === 0) {
+            return res.json({ success: false, message: 'Akses Ditolak: Anda belum mengklaim kasus ini.' });
+        }
+
+        // 2. Jika lolos, ambil 7 jurnal terakhir mahasiswa tersebut
+        const [journals] = await db.query(
+            `SELECT DATE_FORMAT(date, '%d %b %Y') as nice_date, q1_feeling, q2_thought, q3_supporting, q4_contradicting, q5_gratitude, ai_feedback 
+             FROM journals 
+             WHERE user_id = ? 
+             ORDER BY date DESC LIMIT 7`,
+            [studentId]
+        );
+
+        res.json({ success: true, journals });
+    } catch (error) {
+        console.error("Error Fetch Journals:", error);
+        res.status(500).json({ success: false, message: "Server Error" });
+    }
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server berjalan di http://localhost:${PORT}`);
