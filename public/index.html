@@ -1,73 +1,9 @@
 <!DOCTYPE html>
-<html lang="id">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Test AI CBT</title>
-    <style>
-        body { font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; }
-        .box { border: 1px solid #ccc; padding: 15px; margin-top: 10px; border-radius: 5px; background: #f9f9f9; }
-        pre { background: #333; color: #0f0; padding: 10px; border-radius: 5px; overflow-x: auto; }
-        textarea { width: 100%; height: 80px; margin-bottom: 10px; padding: 10px; }
-        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
-    </style>
+    <meta http-equiv="refresh" content="0; url=login.html" />
 </head>
 <body>
-
-    <h2>🤖 Tester AI Chat & Ekstraksi Jurnal</h2>
-    
-    <label><b>Chat sebagai Mahasiswa:</b></label><br>
-    <textarea id="chatInput" placeholder="Contoh: Hari ini aku ngerasa down banget karena nilai kuis jelek, padahal aku udah belajar. Tapi syukurlah tadi sempet jajan es krim kesukaan buat ngeredain stres..."></textarea><br>
-    
-    <button onclick="sendChat()" id="btnSend">Kirim ke AI</button>
-    <span id="loading" style="display:none;"> Memproses AI... ⏳</span>
-
-    <div class="box">
-        <h3>💬 Balasan Empati AI:</h3>
-        <p id="aiReply">-</p>
-    </div>
-
-    <div class="box">
-        <h3>📊 Data JSON (Background Ekstraksi CBT):</h3>
-        <pre id="jsonOutput">Data jurnal akan muncul di sini...</pre>
-    </div>
-
-    <script>
-        async function sendChat() {
-            const input = document.getElementById('chatInput').value;
-            if (!input) return alert("Ketik sesuatu dulu!");
-
-            document.getElementById('loading').style.display = 'inline';
-            document.getElementById('btnSend').disabled = true;
-
-            try {
-                // Mengirim request ke endpoint backend yang kita buat di server.js
-                const response = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: input, userId: 1 })
-                });
-
-                const result = await response.json();
-                
-                if (result.success) {
-                    // Tampilkan teks balasan untuk user
-                    document.getElementById('aiReply').innerText = result.data.reply;
-                    
-                    // Tampilkan format JSON murni untuk mengecek fungsi ekstraksi jurnal
-                    document.getElementById('jsonOutput').innerText = JSON.stringify(result.data, null, 2);
-                } else {
-                    alert("Error: " + result.message);
-                }
-            } catch (err) {
-                console.error(err);
-                alert("Gagal koneksi ke server.");
-            }
-
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('btnSend').disabled = false;
-        }
-    </script>
-
+    <p>Mengalihkan ke halaman login...</p>
 </body>
 </html>
